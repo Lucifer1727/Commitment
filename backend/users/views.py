@@ -1,83 +1,166 @@
-from django.shortcuts import render, redirect
-from django.contrib.auth.models import User
-from django.contrib.auth import authenticate, login ,logout
-from django.contrib import messages
+from rest_framework import viewsets, status, filters
+from rest_framework.decorators import action
+from rest_framework.views import APIView
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework.response import Response
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+from django.contrib.auth import logout, get_user_model
+from django.views.generic import TemplateView
+from django_filters.rest_framework import DjangoFilterBackend
 
-# Create your views here.
-def signup(request):
-    """Handle user registration with form-based submission"""
-    if request.method == "POST":
-        # Get form data from POST request
-        first_name = request.POST.get("first_name", "").strip()
-        last_name = request.POST.get("last_name", "").strip()
-        username = request.POST.get("username", "").strip()
-        email = request.POST.get("email", "").strip()
-        password = request.POST.get("password", "")
-        password_confirm = request.POST.get("password_confirm", "")
-        
-        # Validation checks
-        errors = []
-        
-        # Check if all fields are provided
-        if not all([first_name, last_name, username, email, password, password_confirm]):
-            errors.append("All fields are required!")
-        
-        # Check if username already exists
-        if User.objects.filter(username=username).exists():
-            errors.append("Username already taken!")
-        
-        # Check if email already exists
-        if User.objects.filter(email=email).exists():
-            errors.append("Email already registered!")
-        
-        # Check if passwords match
-        if password != password_confirm:
-            errors.append("Passwords don't match!")
-        
-        # Check password length
-        if len(password) < 8:
-            errors.append("Password must be at least 8 characters long!")
-        
-        # If there are errors, show them
-        if errors:
-            for error in errors:
-                messages.error(request, error)
-            return render(request, "signup.html")
-        
-        # Create user if all validations pass
+from .serializers import Default_SignupSerializer, UserProfileSerializer, UserStatisticsSerializer
+from .models import CustomUser, UserStatistics
+
+class AccountLogout(APIView):
+    permission_classes = (IsAuthenticated,)
+
+    def post(self, request):
         try:
-            my_user = User.objects.create_user(
-                username=username,
-                email=email,
-                password=password,
-                first_name=first_name,
-                last_name=last_name
-            )
-            my_user.save()
-            messages.success(request, "Account created successfully! Please login.")
-            return redirect("login_view")
+            refresh_token = request.data["refresh_token"]
+            token = RefreshToken(refresh_token)
+            token.blacklist()
+            logout(request)
+            return Response(status=status.HTTP_205_RESET_CONTENT)
         except Exception as e:
-            messages.error(request, f"Error creating account: {str(e)}")
-            return render(request, "signup.html")
-    
-    return render(request, "signup.html")
-
-
-def login_view(request):
-    """Handle user login with form-based submission"""
-    if request.method == "POST":
-        username = request.POST.get("username", "").strip()
-        password = request.POST.get("password", "")
+            return Response(status=status.HTTP_400_BAD_REQUEST)
         
-        # Authenticate user
-        user = authenticate(request, username=username, password=password)
-        
-        if user is not None:
-            login(request, user)
-            messages.success(request, f"Welcome back, {user.first_name}!")
-            return redirect("home") 
-        else:
-            messages.error(request, "Invalid username or password!")
-            return render(request, "loginn.html")
+class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
+    """Custom JWT token serializer with user data"""
     
-    return render(request, "loginn.html")
+    def validate(self, attrs):
+        data = super().validate(attrs)
+        data['user'] = {
+            'id': self.user.id,
+            'username': self.user.username,
+            'email': self.user.email,
+            'first_name': self.user.first_name,
+            'last_name': self.user.last_name,
+        }
+        return data
+
+User = get_user_model()
+
+class CustomTokenObtainPairView(TokenObtainPairView):
+    """Custom JWT token obtain view"""
+    def get_serializer_class(self):
+        return CustomTokenObtainPairSerializer
+
+class UserRegistrationViewSet(viewsets.ModelViewSet):
+    """ViewSet for user registration"""
+    queryset = CustomUser.objects.all()
+    serializer_class = Default_SignupSerializer
+    permission_classes = [AllowAny]
+    http_method_names = ['post']
+    
+    @action(detail=False, methods=['post'], permission_classes=[AllowAny])
+    def register(self, request):
+        serializer = Default_SignupSerializer(data=request.data)
+        if serializer.is_valid():
+            user = serializer.save()
+            refresh = RefreshToken.for_user(user)
+            return Response({
+                'message': 'Registration successful.',
+                'user': UserProfileSerializer(user).data,
+                'refresh': str(refresh),
+                'access': str(refresh.access_token),
+                'profile_complete': False,
+            }, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+class UserProfileViewSet(viewsets.ModelViewSet):
+    """User profile management"""
+    
+    permission_classes = [IsAuthenticated]
+    
+    def list(self, request):
+        """Get current user profile"""
+        serializer = UserProfileSerializer(request.user)
+        return Response(serializer.data)
+
+    def retrieve(self, request, pk=None):
+        """Get specific user profile (public)"""
+        try:
+            user = CustomUser.objects.get(pk=pk)
+            serializer = UserProfileSerializer(user)
+            return Response(serializer.data)
+        except CustomUser.DoesNotExist:
+            return Response(
+                {'detail': 'User not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+    
+    @action(detail=False, methods=['patch'])
+    def update_profile(self, request):
+        """Update current user profile"""
+        serializer = UserProfileSerializer(request.user, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(
+                UserProfileSerializer(request.user).data,
+                status=status.HTTP_200_OK
+            )
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+    @action(detail=False, methods=['post'])
+    def change_password(self, request):
+        """Change user password"""
+        old_password = request.data.get('old_password')
+        new_password = request.data.get('new_password')
+        new_password_confirm = request.data.get('new_password_confirm')
+        
+        if not request.user.check_password(old_password):
+            return Response(
+                {'old_password': 'Old password is incorrect'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if new_password != new_password_confirm:
+            return Response(
+                {'new_password': 'Passwords do not match'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        request.user.set_password(new_password)
+        request.user.save()
+        
+        return Response(
+            {'detail': 'Password changed successfully'},
+            status=status.HTTP_200_OK
+        )
+        
+class UserStatisticsViewSet(viewsets.ViewSet):
+    """User statistics"""
+    permission_classes = [IsAuthenticated]
+    
+    def list(self, request):
+        """Get current user statistics"""
+        try:
+            from .models import UserStatistics
+            stats = UserStatistics.objects.get(user=request.user)
+            serializer = UserStatisticsSerializer(stats)
+            return Response(serializer.data)
+        except UserStatistics.DoesNotExist:
+            return Response(
+                {'detail': 'Statistics not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+    
+    def retrieve(self, request, pk=None):
+        """Get specific user statistics (public)"""
+        try:
+            user = CustomUser.objects.get(pk=pk)
+            stats = UserStatistics.objects.get(user=user)
+            serializer = UserStatisticsSerializer(stats)
+            return Response(serializer.data)
+        except (CustomUser.DoesNotExist, UserStatistics.DoesNotExist):
+            return Response(
+                {'detail': 'Statistics not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+class AccountTemplateView(TemplateView):
+    """Template view for authentication testing"""
+    template_name = 'accounts/account.html'
+    permission_classes = [AllowAny]

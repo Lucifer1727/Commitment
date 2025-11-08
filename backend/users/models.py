@@ -6,44 +6,47 @@ from decimal import Decimal
 # Create your models here.
 class CustomUser(AbstractUser):
     """Custom user model extending AbstractUser with additional fields"""
+    
+    
     LENIENCY_CHOICES = [
         ('lenient', 'Lenient'),
         ('normal', 'Normal'),
         ('hard', 'Hard'),
     ]
+        
+    phone_number = models.CharField(max_length=15, blank=True, null=True)
+
+    profile_complete = models.BooleanField(default=False)
+
+    bio = models.TextField(blank=True, null=True)
+    profile_image = models.ImageField(upload_to='profile_images/', blank=True, null=True)
     leniency = models.CharField(
         max_length=10,
         choices=LENIENCY_CHOICES,
         default='normal',
     )
-    
-    phone_number = models.CharField(max_length=15, blank=True, null=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
-    groups = models.ManyToManyField(
-        'auth.Group',
-        related_name='custom_user_groups',
-        blank=True,
-        help_text='The groups this user belongs to.',
-    )
+    class Meta:
+        verbose_name = "User"
+        verbose_name_plural = "Users"
+        ordering = ['-created_at']
     
-    user_permissions = models.ManyToManyField(
-        'auth.Permission',
-        related_name='custom_user_permissions',
-        blank=True,
-        help_text='Specific permissions for this user.',
-    )
-
     def __str__(self):
         return f"{self.get_full_name()} ({self.username})"
     
     @property
     def success_rate(self):
-        """Calculate success rate as percentage"""
-        total = self.successful_contracts + self.failed_contracts
+        """Calculate success rate as percentage from user statistics"""
+        stats = self.statistics.first()  # Get latest statistics
+        if not stats:
+            return 0
+        total = stats.successful_contracts + stats.failed_contracts
         if total == 0:
             return 0
-        return (self.successful_contracts / total) * 100
+        return (stats.successful_contracts / total) * 100
     
+
 class UserStatistics(models.Model):
     """Model to track user statistics over time"""
     user = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='statistics')

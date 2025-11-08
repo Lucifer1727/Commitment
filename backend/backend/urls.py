@@ -23,11 +23,13 @@ from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 from users.views import (
-    CustomTokenObtainPairView, UserRegistrationViewSet, UserProfileViewSet,
-    FriendNotificationViewSet, UserStatisticsViewSet
+    UserRegistrationViewSet,
+    CustomTokenObtainPairView,
+    AccountLogout,
 )
 urlpatterns = [
     path("admin/", admin.site.urls),
-    path("signup/", views.signup, name="signup"),
-    path("login/", views.login_view, name="login_view"),
+    path("signup/", UserRegistrationViewSet.as_view({'post': 'register'}), name="signup"),
+    path("login/", CustomTokenObtainPairView.as_view(), name="login"),
+    path("logout/", AccountLogout.as_view(), name="logout"),
 ]
